@@ -81,6 +81,15 @@ class HttpContractTests(unittest.TestCase):
                 response_schema = response["content"]["application/json"]["schema"]
                 self.assertTrue(response_schema, (path, method))
 
+    def test_generated_openapi_calendar_response_constraints(self):
+        schema = app.openapi()["components"]["schemas"]
+        self.assertEqual(schema["AttendanceRecord"]["properties"]["date"]["format"], "date")
+        self.assertEqual(schema["TrendRow"]["properties"]["date"]["format"], "date")
+        self.assertEqual(
+            schema["EmployeeMonthly"]["properties"]["month"]["pattern"],
+            r"^\d{4}-(0[1-9]|1[0-2])$",
+        )
+
     def test_conflict_and_database_errors_have_safe_http_bodies(self):
         class EmployeeCollection:
             def __init__(self, error):

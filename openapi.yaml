@@ -596,7 +596,7 @@ components:
       required: [emp_code, month, working_days, present_days, leave_days, late_count, total_late_minutes, total_overtime_minutes, attendance_pct]
       properties:
         emp_code: {type: string}
-        month: {type: string}
+        month: {type: string, pattern: '^\d{4}-(0[1-9]|1[0-2])$'}
         working_days: {type: integer}
         present_days: {type: number}
         leave_days: {type: integer}

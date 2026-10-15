@@ -66,7 +66,7 @@ class HistoryEntry(BaseModel):
 
 class AttendanceRecord(BaseModel):
     emp_code: str
-    date: str
+    date: str = Field(json_schema_extra={"format": "date"})
     status: Literal["PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY"]
     punch_in: NullableEpochMillis
     punch_out: NullableEpochMillis
@@ -87,7 +87,7 @@ class Health(BaseModel):
 
 class EmployeeMonthly(BaseModel):
     emp_code: str
-    month: str
+    month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     working_days: int
     present_days: float
     leave_days: int
@@ -123,7 +123,7 @@ class Leaderboard(BaseModel):
     items: list[LeaderboardRow]
 
 class TrendRow(BaseModel):
-    date: str
+    date: str = Field(json_schema_extra={"format": "date"})
     is_working_day: bool
     headcount: int
     present_count: float
