@@ -1,0 +1,14 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.log
+PROBLEM_STATEMENT.docx
+SUBMISSION_CHECKLIST.md
+tests/seed_manual_demo.py
+tests/add_recent_demo_records.py
