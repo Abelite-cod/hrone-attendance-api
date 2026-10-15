@@ -8,8 +8,8 @@
 
 4. Headcount: Summary starts with employees who joined by month end, then looks up monthly attendance. Employees without logs remain and count once; later joiners are excluded.
 
-5. Scale: Profile representative workloads and query plans before considering pre-aggregated summaries or sharding. Both add freshness and operational costs. No fresh 100k explain/scale check was run for this revision, so no current performance result is claimed.
+5. Scale: Profile representative workloads and query plans before considering pre-aggregated summaries or sharding. Both add freshness and operational costs. Guarded 100k scale/explain checks passed on both `5e17a7f` and current commit `27eb112`; the current run did not use `--benchmark`, so its HTTP performance was not measured.
 
 6. Rate precision: Compute reported percentages with `Decimal` and `ROUND_HALF_UP` at four decimal places, as R8 requires for rates. The unit regression `1 / 23 x 100 = 4.3478` distinguishes this from two-place rounding.
 
-7. Verification boundaries: The unit/ASGI checks passed, and a fresh disposable Atlas database was used for the integration and 100k scale/explain audits. Analytics expectations and explain index selection passed on those fixtures. These checks do not establish production SLOs or cover every hidden grader fixture; rerun them with the guarded commands in `README.md` after code changes.
+7. Verification boundaries: On current commit `27eb112f45b747e6d1933dd71758ef046c7f682f`, compilation passed and the full 12-test unit/ASGI/MongoDB suite passed against Atlas MongoDB 8.0.34 using fresh guarded database `attendance_disposable_full_261015`. A guarded 100k scale/explain audit passed on fresh `attendance_disposable_scale_261015`; both databases were dropped by cleanup. No HTTP benchmark was run on this revision (the historical `5e17a7f` scale run did include one). A read-only localhost ping failed because no MongoDB listener was available at localhost:27017; Atlas verification used the configured remote URI. These checks do not establish production SLOs or cover every hidden grader fixture; rerun them with the guarded commands in `README.md` after code changes.
