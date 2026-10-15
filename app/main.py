@@ -6,11 +6,12 @@ import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from fastapi import FastAPI, HTTPException, Path, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 from bson import json_util
 from pymongo import ASCENDING, DESCENDING, MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
@@ -23,6 +24,8 @@ db = client[os.getenv("MONGO_DB", "attendance_db")]
 PRESENCE = ("PRESENT", "WFH", "ON_DUTY")
 STATUSES = (*PRESENCE, "ABSENT", "LEAVE")
 EPOCH_MIN, EPOCH_MAX = 100_000_000_000, 4_102_444_800_000
+EpochMillis = Annotated[int, Field(ge=EPOCH_MIN, le=EPOCH_MAX, json_schema_extra={"format": "int64"})]
+NullableEpochMillis = EpochMillis | None
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -38,6 +41,111 @@ async def lifespan(_: FastAPI):
     client.close()
 
 app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0", lifespan=lifespan)
+
+class Employee(BaseModel):
+    emp_code: str
+    name: str
+    email: str
+    department: str
+    shift_start: str
+    shift_end: str
+    joined_on: str = Field(json_schema_extra={"format": "date"})
+    created_at: EpochMillis
+
+class EmployeePage(BaseModel):
+    items: list[Employee]
+    total: int
+    page: int
+    page_size: int
+
+class HistoryEntry(BaseModel):
+    at: EpochMillis
+    by: str
+    reason: str
+    changes: dict[str, dict[str, Any]]
+
+class AttendanceRecord(BaseModel):
+    emp_code: str
+    date: str
+    status: Literal["PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY"]
+    punch_in: NullableEpochMillis
+    punch_out: NullableEpochMillis
+    work_hours: float | None
+    late_minutes: int
+    overtime_minutes: int
+    half_day: bool
+    history: list[HistoryEntry]
+
+class AttendancePage(BaseModel):
+    items: list[AttendanceRecord]
+    total: int
+    page: int
+    page_size: int
+
+class Health(BaseModel):
+    status: Literal["ok"]
+
+class EmployeeMonthly(BaseModel):
+    emp_code: str
+    month: str
+    working_days: int
+    present_days: float
+    leave_days: int
+    late_count: int
+    total_late_minutes: int
+    total_overtime_minutes: int
+    attendance_pct: float | None
+
+class DepartmentRow(BaseModel):
+    department: str
+    headcount: int
+    present_days: float
+    avg_work_hours: float | None
+    late_count: int
+    total_late_minutes: int
+    leave_count: int
+    on_duty_count: int
+
+class DepartmentSummary(BaseModel):
+    month: str
+    items: list[DepartmentRow]
+
+class LeaderboardRow(BaseModel):
+    rank: int
+    emp_code: str
+    name: str
+    department: str
+    total_late_minutes: int
+    late_count: int
+
+class Leaderboard(BaseModel):
+    month: str
+    items: list[LeaderboardRow]
+
+class TrendRow(BaseModel):
+    date: str
+    is_working_day: bool
+    headcount: int
+    present_count: float
+    late_count: int
+    attendance_rate: float | None
+    moving_avg_7d: float | None
+
+class Trend(BaseModel):
+    department: str
+    items: list[TrendRow]
+
+class ExplainResponse(BaseModel):
+    endpoint: str
+    collection: str
+    explain: dict[str, Any]
+
+class ErrorResponse(BaseModel):
+    detail: str
+
+@app.exception_handler(PyMongoError)
+async def mongo_error_handler(_: Request, __: PyMongoError):
+    return JSONResponse(status_code=503, content={"detail": "Database operation failed"})
 
 def parse_day(value: str) -> date:
     try:
@@ -96,6 +204,7 @@ def shift_end_dt(punch_in: datetime, shift_start: str, shift_end: str) -> dateti
     return datetime.combine(end_day, time(eh, em), IST).astimezone(UTC)
 
 def attendance_day(punch: datetime, employee: dict) -> date:
+    punch = punch.replace(microsecond=0)
     local = punch.astimezone(IST); start = tuple(map(int, employee["shift_start"].split(":")))
     end = tuple(map(int, employee["shift_end"].split(":")))
     d = local.date()
@@ -103,6 +212,7 @@ def attendance_day(punch: datetime, employee: dict) -> date:
     return d
 
 def late_minutes(punch: datetime, employee: dict) -> int:
+    punch = punch.replace(microsecond=0)
     start = shift_start_dt(punch, employee["shift_start"], employee["shift_end"])
     elapsed = int((punch - start).total_seconds())
     return elapsed // 60 if elapsed > 600 else 0
@@ -110,6 +220,9 @@ def late_minutes(punch: datetime, employee: dict) -> int:
 def derived(punch_in: datetime | None, punch_out: datetime | None, employee: dict) -> dict:
     if not punch_in:
         return {"work_hours": None, "late_minutes": 0, "overtime_minutes": 0, "half_day": False}
+    punch_in = punch_in.replace(microsecond=0)
+    if punch_out is not None:
+        punch_out = punch_out.replace(microsecond=0)
     late = late_minutes(punch_in, employee)
     if not punch_out: return {"work_hours": None, "late_minutes": late, "overtime_minutes": 0, "half_day": False}
     seconds = int((punch_out - punch_in).total_seconds())
@@ -122,6 +235,11 @@ def working_days(start: date, end: date) -> int:
     if end < start: return 0
     weeks, rem = divmod((end - start).days + 1, 7)
     return weeks * 5 + sum((start + timedelta(days=weeks * 7 + i)).weekday() < 5 for i in range(rem))
+
+def attendance_percentage(present_days: float, days: int) -> float | None:
+    if not days:
+        return None
+    return float((Decimal(str(present_days)) * Decimal(100) / Decimal(days)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
 
 def must_employee(code: str) -> dict:
     emp = db.employees.find_one({"emp_code": code}, {"_id": 0})
@@ -136,7 +254,7 @@ class EmployeeIn(BaseModel):
     department: str = Field(min_length=1, max_length=50)
     shift_start: str = Field(default="09:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     shift_end: str = Field(default="18:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    joined_on: str
+    joined_on: str = Field(json_schema_extra={"format": "date"})
     @field_validator("joined_on")
     @classmethod
     def valid_date(cls, v): parse_day(v); return v
@@ -148,7 +266,7 @@ class EmployeeIn(BaseModel):
 class PunchInIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
     emp_code: str
-    punched_at: int | None = None
+    punched_at: StrictInt = Field(default=None, ge=EPOCH_MIN, le=EPOCH_MAX, json_schema_extra={"format": "int64"})
     status: Literal["PRESENT", "WFH", "ON_DUTY"] = "PRESENT"
     @field_validator("punched_at")
     @classmethod
@@ -163,7 +281,7 @@ class PunchInIn(BaseModel):
 class PunchOutIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
     emp_code: str
-    punched_at: int | None = None
+    punched_at: StrictInt = Field(default=None, ge=EPOCH_MIN, le=EPOCH_MAX, json_schema_extra={"format": "int64"})
     @field_validator("punched_at")
     @classmethod
     def valid_timestamp(cls, v):
@@ -176,9 +294,9 @@ class PunchOutIn(BaseModel):
 
 class RegularizeIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    status: Literal["PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY"] | None = None
-    punch_in: int | None = None
-    punch_out: int | None = None
+    status: Literal["PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY"] = None
+    punch_in: StrictInt = Field(default=None, ge=EPOCH_MIN, le=EPOCH_MAX, json_schema_extra={"format": "int64"})
+    punch_out: StrictInt = Field(default=None, ge=EPOCH_MIN, le=EPOCH_MAX, json_schema_extra={"format": "int64"})
     reason: str = Field(min_length=5, max_length=200)
     regularized_by: str = Field(min_length=1, max_length=50)
     @field_validator("punch_in", "punch_out")
@@ -193,26 +311,26 @@ class RegularizeIn(BaseModel):
             if field in self.model_fields_set and getattr(self, field) is None: raise ValueError(f"{field} cannot be null")
         return self
 
-@app.get("/health")
+@app.get("/health", response_model=Health, responses={503: {"model": ErrorResponse, "description": "Database unavailable"}})
 def health():
     try: db.command("ping")
     except PyMongoError: raise HTTPException(503, "Database unavailable")
     return {"status": "ok"}
 
-@app.post("/employees", status_code=201)
+@app.post("/employees", status_code=201, response_model=Employee, responses={409: {"model": ErrorResponse, "description": "Conflict"}, 503: {"model": ErrorResponse, "description": "Database unavailable"}})
 def create_employee(body: EmployeeIn):
     doc = body.model_dump(); doc["created_at"] = datetime.now(UTC).replace(microsecond=0)
     try: db.employees.insert_one(doc)
     except DuplicateKeyError: raise HTTPException(409, "emp_code already exists")
     return json_value(doc)
 
-@app.get("/employees")
+@app.get("/employees", response_model=EmployeePage, responses={503: {"model": ErrorResponse, "description": "Database unavailable"}})
 def list_employees(department: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     query = {"department": department} if department is not None else {}
     items = list(db.employees.find(query, {"_id": 0}).sort("emp_code", ASCENDING).skip((page-1)*page_size).limit(page_size))
     return {"items": json_value(items), "total": db.employees.count_documents(query), "page": page, "page_size": page_size}
 
-@app.post("/attendance/punch-in", status_code=201)
+@app.post("/attendance/punch-in", status_code=201, response_model=AttendanceRecord, responses={404: {"model": ErrorResponse, "description": "Not found"}, 409: {"model": ErrorResponse, "description": "Conflict"}, 503: {"model": ErrorResponse, "description": "Database unavailable"}})
 def punch_in(body: PunchInIn):
     emp = must_employee(body.emp_code); ts = epoch_datetime(body.punched_at)
     day = attendance_day(ts, emp).isoformat()
@@ -222,38 +340,39 @@ def punch_in(body: PunchInIn):
     except DuplicateKeyError: raise HTTPException(409, "Already punched in for this date")
     return record_out(doc)
 
-@app.post("/attendance/punch-out")
+@app.post("/attendance/punch-out", response_model=AttendanceRecord, responses={404: {"model": ErrorResponse, "description": "Not found"}, 409: {"model": ErrorResponse, "description": "Conflict"}, 503: {"model": ErrorResponse, "description": "Database unavailable"}})
 def punch_out(body: PunchOutIn):
     emp = must_employee(body.emp_code); ts = epoch_datetime(body.punched_at)
     doc = db.attendance_logs.find_one({"emp_code": body.emp_code, "punch_in": {"$lte": ts}}, sort=[("punch_in", DESCENDING)])
     if not doc: raise HTTPException(404, "No punch-in found")
     pi = doc.get("punch_in")
     if not pi: raise HTTPException(404, "No punch-in found")
+    pi = pi.replace(microsecond=0)
     seconds = (ts - pi).total_seconds()
     if seconds <= 0 or seconds > 86400: raise HTTPException(422, "Punch-out must be after punch-in and within 24 hours")
-    fields = {"punch_out": ts, **derived(pi, ts, emp)}
+    fields = {"punch_in": pi, "punch_out": ts, **derived(pi, ts, emp)}
     result = db.attendance_logs.find_one_and_update({"_id": doc["_id"], "punch_out": None}, {"$set": fields}, return_document=ReturnDocument.AFTER)
     if result is None: raise HTTPException(409, "Attendance record is already punched out")
     return record_out(result)
 
-@app.get("/attendance")
-def list_attendance(emp_code: str | None = None, date_from: str | None = None, date_to: str | None = None,
+@app.get("/attendance", response_model=AttendancePage, responses={503: {"model": ErrorResponse, "description": "Database unavailable"}})
+def list_attendance(emp_code: str | None = None, date_from: Annotated[str | None, Query(json_schema_extra={"format": "date"})] = None, date_to: Annotated[str | None, Query(json_schema_extra={"format": "date"})] = None,
                     status: Literal["PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY"] | None = None,
                     page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     q: dict[str, Any] = {}
     if emp_code is not None: q["emp_code"] = emp_code
-    if date_from:
+    if date_from is not None:
         parse_day(date_from); q.setdefault("date", {})["$gte"] = date_from
-    if date_to:
+    if date_to is not None:
         parse_day(date_to); q.setdefault("date", {})["$lte"] = date_to
-    if date_from and date_to and date_from > date_to: raise HTTPException(422, "date_from must be on or before date_to")
+    if date_from is not None and date_to is not None and date_from > date_to: raise HTTPException(422, "date_from must be on or before date_to")
     if status: q["status"] = status
     total = db.attendance_logs.count_documents(q)
     docs = db.attendance_logs.find(q, {"_id": 0}).sort([("date", DESCENDING), ("emp_code", ASCENDING)]).skip((page-1)*page_size).limit(page_size)
     return {"items": [record_out(d) for d in docs], "total": total, "page": page, "page_size": page_size}
 
-@app.patch("/attendance/{emp_code}/{date}")
-def regularize(emp_code: str, date: str, body: RegularizeIn):
+@app.patch("/attendance/{emp_code}/{date}", response_model=AttendanceRecord, responses={404: {"model": ErrorResponse, "description": "Not found"}, 409: {"model": ErrorResponse, "description": "Conflict"}, 503: {"model": ErrorResponse, "description": "Database unavailable"}})
+def regularize(emp_code: str, date: Annotated[str, Path(json_schema_extra={"format": "date"})], body: RegularizeIn):
     parse_day(date); emp = must_employee(emp_code)
     old = db.attendance_logs.find_one({"emp_code": emp_code, "date": date})
     if old is None: raise HTTPException(404, "Attendance record not found")
@@ -264,6 +383,8 @@ def regularize(emp_code: str, date: str, body: RegularizeIn):
     else:
         pi = epoch_datetime(body.punch_in) if body.punch_in is not None else old.get("punch_in")
         po = epoch_datetime(body.punch_out) if body.punch_out is not None else old.get("punch_out")
+        if pi is not None: pi = pi.replace(microsecond=0)
+        if po is not None: po = po.replace(microsecond=0)
         if not pi: raise HTTPException(422, "Presence status requires punch_in")
         if attendance_day(pi, emp).isoformat() != date: raise HTTPException(422, "punch_in must belong to the record date")
         if po and ((po-pi).total_seconds() <= 0 or (po-pi).total_seconds() > 86400): raise HTTPException(422, "Invalid punch interval")
@@ -303,7 +424,7 @@ def department_summary_pipeline(start: date, end: date, department: str | None =
           "late_count": {"$sum": {"$cond": [{"$gt": [{"$ifNull": ["$logs.late_minutes",0]},0]},1,0]}},
           "total_late_minutes": {"$sum": {"$ifNull": ["$logs.late_minutes",0]}},
           "leave_count": {"$sum": {"$cond": [{"$eq": ["$logs.status","LEAVE"]},1,0]}}, "on_duty_count": {"$sum": {"$cond": [{"$eq": ["$logs.status","ON_DUTY"]},1,0]}}}},
-        {"$project": {"_id": 0,"department":"$_id","headcount":{"$size":"$headcount"},"present_days":1,"avg_work_hours":{"$cond":[{"$ne":["$avg_work_hours",None]},{"$divide":[{"$floor":{"$add":[{"$multiply":["$avg_work_hours",100]},0.5]}},100]},None]},"late_count":1,"total_late_minutes":1,"leave_count":1,"on_duty_count":1}},
+        {"$project": {"_id": 0,"department":"$_id","headcount":{"$size":"$headcount"},"present_days":1,"avg_work_hours":1,"late_count":1,"total_late_minutes":1,"leave_count":1,"on_duty_count":1}},
         {"$sort":{"department":1}}]
 
 def late_leaderboard_pipeline(start: date, end: date, limit: int, department: str | None = None):
@@ -314,8 +435,8 @@ def late_leaderboard_pipeline(start: date, end: date, limit: int, department: st
               {"$sort":{"total_late_minutes":-1,"_id":1}}, {"$project":{"_id":0,"rank":1,"emp_code":"$_id","name":"$employee.name","department":"$employee.department","total_late_minutes":1,"late_count":1}}])
     return pipeline
 
-@app.get("/analytics/employees/{emp_code}/monthly")
-def employee_monthly(emp_code: str, month: str):
+@app.get("/analytics/employees/{emp_code}/monthly", response_model=EmployeeMonthly, responses={404: {"model": ErrorResponse, "description": "Not found"}, 503: {"model": ErrorResponse, "description": "Database unavailable"}})
+def employee_monthly(emp_code: str, month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$")):
     emp = must_employee(emp_code); start, end = parse_month(month)
     pipe = employee_monthly_pipeline(emp_code, start, end)
     # Weekday-only present_days is enforced in the accumulator; weekends still contribute late/overtime.
@@ -325,20 +446,21 @@ def employee_monthly(emp_code: str, month: str):
     return {"emp_code": emp_code, "month": month, "working_days": wd, "present_days": present,
             "leave_days": row.get("leave_days", 0), "late_count": row.get("late_count", 0),
             "total_late_minutes": row.get("total_late_minutes", 0), "total_overtime_minutes": row.get("total_overtime_minutes", 0),
-            "attendance_pct": float(Decimal(str(present / wd * 100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) if wd else None}
+            "attendance_pct": attendance_percentage(present, wd)}
 
-@app.get("/analytics/departments/summary")
-def department_summary(month: str, department: str | None = None):
+@app.get("/analytics/departments/summary", response_model=DepartmentSummary, responses={503: {"model": ErrorResponse, "description": "Database unavailable"}})
+def department_summary(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), department: str | None = None):
     start, end = parse_month(month)
     pipeline = department_summary_pipeline(start, end, department)
     items = list(db.employees.aggregate(pipeline))
     for x in items:
-        if x.get("avg_work_hours") is None: x["avg_work_hours"] = None
+        average = x.get("avg_work_hours")
+        x["avg_work_hours"] = float(Decimal(str(average)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) if average is not None else None
         if x["headcount"] == 0: continue
     return {"month": month, "items": [json_value(x) for x in items if x["headcount"] > 0]}
 
-@app.get("/analytics/leaderboard/late")
-def late_leaderboard(month: str, limit: int = Query(10, ge=1, le=50), department: str | None = None):
+@app.get("/analytics/leaderboard/late", response_model=Leaderboard, responses={503: {"model": ErrorResponse, "description": "Database unavailable"}})
+def late_leaderboard(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), limit: int = Query(10, ge=1, le=50), department: str | None = None):
     start, end = parse_month(month)
     p = late_leaderboard_pipeline(start, end, limit, department)
     return {"month":month,"items":list(db.attendance_logs.aggregate(p))}
@@ -360,8 +482,8 @@ def department_trend_pipeline(department: str, from_date: str, days: int):
       {"$project":{"_id":0,"date":"$dates","is_working_day":1,"headcount":1,"present_count":1,"late_count":1,"attendance_rate":1,"moving_avg_7d":{"$cond":[{"$ne":["$moving_avg_7d",None]},{"$divide":[{"$floor":{"$add":[{"$multiply":["$moving_avg_7d",10000]},0.5]}},10000]},None]}}}, {"$sort":{"date":1}}]
     return pipeline
 
-@app.get("/analytics/departments/{department}/trend")
-def department_trend(department: str, from_date: str = Query(..., alias="from"), to_date: str = Query(..., alias="to")):
+@app.get("/analytics/departments/{department}/trend", response_model=Trend, responses={404: {"model": ErrorResponse, "description": "Not found"}, 503: {"model": ErrorResponse, "description": "Database unavailable"}})
+def department_trend(department: str, from_date: str = Query(..., alias="from", json_schema_extra={"format": "date"}), to_date: str = Query(..., alias="to", json_schema_extra={"format": "date"})):
     first, last = parse_day(from_date), parse_day(to_date)
     if last < first or (last-first).days+1 > 92: raise HTTPException(422,"Invalid trend range")
     if not db.employees.find_one({"department":department}, {"_id":1}): raise HTTPException(404,"Department not found")
@@ -369,17 +491,17 @@ def department_trend(department: str, from_date: str = Query(..., alias="from"),
     pipeline = department_trend_pipeline(department, from_date, days)
     return {"department":department,"items":list(db.employees.aggregate(pipeline))}
 
-@app.get("/admin/explain/{endpoint}")
+@app.get("/admin/explain/{endpoint}", response_model=ExplainResponse, responses={422: {"model": ErrorResponse, "description": "Invalid explain request"}, 503: {"model": ErrorResponse, "description": "Database unavailable"}})
 def explain(endpoint: Literal["attendance_list","employee_monthly","department_summary","late_leaderboard","department_trend"],
-            emp_code: str | None = None, month: str | None = None, department: str | None = None, limit: int = Query(10,ge=1,le=50),
-            date_from: str | None = None, date_to: str | None = None, status: Literal["PRESENT","ABSENT","LEAVE","WFH","ON_DUTY"] | None = None,
-            page: int = Query(1,ge=1), page_size: int = Query(20,ge=1,le=100), from_date: str | None = Query(None,alias="from"), to_date: str | None = Query(None,alias="to")):
+            emp_code: str | None = None, month: str | None = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), department: str | None = None, limit: int = Query(10,ge=1,le=50),
+            date_from: str | None = Query(None, json_schema_extra={"format": "date"}), date_to: str | None = Query(None, json_schema_extra={"format": "date"}), status: Literal["PRESENT","ABSENT","LEAVE","WFH","ON_DUTY"] | None = None,
+            page: int = Query(1,ge=1), page_size: int = Query(20,ge=1,le=100), from_date: str | None = Query(None,alias="from", json_schema_extra={"format": "date"}), to_date: str | None = Query(None,alias="to", json_schema_extra={"format": "date"})):
     if endpoint == "attendance_list":
         q = {}
         if emp_code is not None: q["emp_code"] = emp_code
-        if date_from: parse_day(date_from); q.setdefault("date",{})["$gte"] = date_from
-        if date_to: parse_day(date_to); q.setdefault("date",{})["$lte"] = date_to
-        if date_from and date_to and date_from > date_to: raise HTTPException(422,"Invalid date range")
+        if date_from is not None: parse_day(date_from); q.setdefault("date",{})["$gte"] = date_from
+        if date_to is not None: parse_day(date_to); q.setdefault("date",{})["$lte"] = date_to
+        if date_from is not None and date_to is not None and date_from > date_to: raise HTTPException(422,"Invalid date range")
         if status: q["status"] = status
         cmd = {"find":"attendance_logs","filter":q,"sort":{"date":-1,"emp_code":1},"skip":(page-1)*page_size,"limit":page_size}
         col = "attendance_logs"

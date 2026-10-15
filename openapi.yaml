@@ -11,8 +11,8 @@ info:
     MongoDB (collections, field types, what the grader seeds, nine sample documents) is defined in `DATA_MODEL.md`.
 
     ## Configuration
-    `MONGO_URI` and `MONGO_DB` are read from environment variables (a local `.env` is fine; real environment variables
-    must win). Create all indexes at startup, idempotently.
+    `MONGO_URI` and `MONGO_DB` are read from environment variables. Do not include a `.env` file in the submission.
+    Create all indexes at startup, idempotently.
 
     ## Conventions used by every endpoint
     * **Employees are identified by `emp_code`.** It is a customer-generated business code assigned by the customer's HR
@@ -131,6 +131,7 @@ paths:
               schema: {$ref: '#/components/schemas/Employee'}
         '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
     get:
       tags: [employees]
       operationId: listEmployees
@@ -151,6 +152,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/EmployeePage'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /attendance/punch-in:
     post:
       tags: [attendance]
@@ -177,6 +179,7 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /attendance/punch-out:
     post:
       tags: [attendance]
@@ -201,6 +204,7 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /attendance:
     get:
       tags: [attendance]
@@ -223,6 +227,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AttendancePage'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /attendance/{emp_code}/{date}:
     patch:
       tags: [attendance]
@@ -256,6 +261,7 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /analytics/employees/{emp_code}/monthly:
     get:
       tags: [analytics]
@@ -277,6 +283,7 @@ paths:
               schema: {$ref: '#/components/schemas/EmployeeMonthly'}
         '404': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /analytics/departments/summary:
     get:
       tags: [analytics]
@@ -305,6 +312,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/DepartmentSummary'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /analytics/leaderboard/late:
     get:
       tags: [analytics]
@@ -330,6 +338,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Leaderboard'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /analytics/departments/{department}/trend:
     get:
       tags: [analytics]
@@ -360,6 +369,7 @@ paths:
               schema: {$ref: '#/components/schemas/Trend'}
         '404': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
   /admin/explain/{endpoint}:
     get:
       tags: [admin]
@@ -402,6 +412,7 @@ paths:
                   collection: {type: string, description: Collection the explained operation ran on.}
                   explain: {type: object, additionalProperties: true, description: Raw MongoDB explain document as JSON.}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Error'}
 components:
   parameters:
     Page:

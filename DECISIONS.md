@@ -8,4 +8,8 @@
 
 4. Headcount: Summary starts with employees who joined by month end, then looks up monthly attendance. Employees without logs remain and count once; later joiners are excluded.
 
-5. 100x data: I would profile workload and query plans first, then consider pre-aggregated summaries or sharding if measurements justify them. Both add freshness and operational costs; the 100k audit does not justify either yet.
+5. Scale: Profile representative workloads and query plans before considering pre-aggregated summaries or sharding. Both add freshness and operational costs. No fresh 100k explain/scale check was run for this revision, so no current performance result is claimed.
+
+6. Rate precision: Compute reported percentages with `Decimal` and `ROUND_HALF_UP` at four decimal places, as R8 requires for rates. The unit regression `1 / 23 x 100 = 4.3478` distinguishes this from two-place rounding.
+
+7. Verification boundaries: The unit/ASGI checks passed, and a fresh disposable Atlas database was used for the integration and 100k scale/explain audits. Analytics expectations and explain index selection passed on those fixtures. These checks do not establish production SLOs or cover every hidden grader fixture; rerun them with the guarded commands in `README.md` after code changes.

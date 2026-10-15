@@ -19,6 +19,8 @@ class MongoApiIntegrationTests(unittest.TestCase):
         cls.test_db_name = os.getenv("MONGO_TEST_DB")
         if not cls.test_db_name:
             raise unittest.SkipTest("Set MONGO_TEST_DB to an unused disposable database name")
+        if not cls.test_db_name.startswith("attendance_disposable_"):
+            raise RuntimeError("Refusing integration checks unless MONGO_TEST_DB starts with attendance_disposable_")
         uri = os.getenv("MONGO_URI")
         if not uri:
             raise unittest.SkipTest("MONGO_URI is not configured")

@@ -1,6 +1,6 @@
 # Employee Attendance & Analytics API
 
-FastAPI and MongoDB implementation for the HROne trainee assessment. It supports employee CRUD, attendance punch-in/out, corrections with audit history, MongoDB aggregation analytics, and explain diagnostics. MongoDB 6.0+ is required; Atlas 8.0.34 was used for the recorded integration and scale checks.
+FastAPI and MongoDB implementation for the HROne trainee assessment. It supports employee CRUD, attendance punch-in/out, corrections with audit history, MongoDB aggregation analytics, and explain diagnostics. `openapi.yaml` and `DATA_MODEL.md` define the contract and storage model. The pipelines use MongoDB 6.0+ features.
 
 ## Run locally (Windows PowerShell)
 
@@ -13,12 +13,12 @@ $env:MONGO_DB = "attendance_db"
 uvicorn app.main:app --port 8000
 ```
 
-Swagger UI: `http://127.0.0.1:8000/docs`. To load the supplied sample documents, run `python sample_seed.py` first against a disposable database. It replaces the contents of the `employees` and `attendance_logs` collections.
+Set configuration through environment variables; do not place a `.env` file in the submission. Swagger UI: `http://127.0.0.1:8000/docs`. To load sample documents, choose a new database name beginning `attendance_seed_`, set `MONGO_DB`, then run `python sample_seed.py`. The seed refuses an existing database.
 
 ## Verification
 
-Run local rule checks with `python -m unittest discover -s tests`. For MongoDB integration checks, set `MONGO_TEST_DB` to a new, unused disposable database name; the test creates fixtures and drops that database afterward.
+Run syntax checks with `python -m compileall -q app tests sample_seed.py` and the unit/ASGI checks with `python -m unittest discover -s tests -p 'test_*.py' -v`. For MongoDB checks, set `MONGO_URI` and choose a new database name beginning `attendance_disposable_` as `MONGO_TEST_DB`. The integration test verifies the name is absent before creating fixtures and drops only that database afterward. If `MONGO_TEST_DB` is unset, the integration test skips.
 
-The opt-in `python tests/scale_audit.py --benchmark` creates 1,000 employees and 100,000 attendance records, verifies analytics and explain plans, exercises the API over localhost HTTP, then drops the temporary database. Use a fresh disposable `MONGO_TEST_DB` each time. The benchmark is a small smoke comparison, not a production capacity or SLO claim. Latest run used Atlas MongoDB 8.0.34; MongoDB 6.0 was not separately tested.
+The opt-in `python tests/scale_audit.py --benchmark` creates 1,000 employees and 100,000 attendance records, checks analytics and explain plans, exercises the API over localhost HTTP, then drops the temporary database. It accepts only a fresh `attendance_disposable_` database. It is a smoke check, not a production capacity or SLO claim.
 
-The recorded department-trend optimization reduced explain documents examined from 180,090 to 22,500 on the 100k fixture. See `REVIEW.md` for the starter-code review and `DECISIONS.md` for the requested design answers. The supplied sample set is only 6 employees and 9 attendance records; the 100k audit is generated separately.
+Latest verification used Atlas MongoDB 8.0.34. The MongoDB integration test passed, including duplicate-write and correction races. The guarded 100k audit passed analytics expectations and all five endpoint explains with index use and zero collection scans; its HTTP contract audit and benchmark also completed. These are assignment-sized smoke checks, not production capacity or SLO claims. See `REVIEW.md` for evidence and `DECISIONS.md` for implementation choices. The supplied sample set contains 6 employees and 9 attendance records; it does not establish analytics correctness on its own.

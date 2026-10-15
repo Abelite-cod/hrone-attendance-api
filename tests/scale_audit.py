@@ -199,6 +199,8 @@ def main():
     uri = os.getenv("MONGO_URI")
     if not db_name or not uri:
         raise SystemExit("Set MONGO_TEST_DB to a new database name; MONGO_URI must be configured.")
+    if not db_name.startswith("attendance_disposable_"):
+        raise SystemExit("Refusing scale audit unless MONGO_TEST_DB starts with attendance_disposable_.")
 
     guard = MongoClient(uri, serverSelectionTimeoutMS=7000)
     try:
